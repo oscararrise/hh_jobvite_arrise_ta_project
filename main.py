@@ -222,10 +222,9 @@ def publish_job_hhru():
     }
 
     try:
-        code = get_code()
-        token_hhru = get_token(code)
-        print(token_hhru)
-        quit()
+        #code = get_code()
+        #token_hhru = get_token(code)
+        
         token_hhru = HH_ACCESS_TOKEN
         headers_for_managers = dict(headers_obtain_managers)
         headers_for_managers.update({

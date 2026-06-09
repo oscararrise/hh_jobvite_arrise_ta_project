@@ -4,7 +4,7 @@ import time
 import random
 import traceback
 from typing import Any, Dict, List, Optional
-
+from statics import HH_ACCESS_TOKEN
 import requests
 
 from config import (
@@ -17,7 +17,8 @@ from config import (
     save_publication_report,
     now_str,
     get_code,
-    get_token
+    get_token,
+    send_excel_report_to_power_automate,
 )
 
 FORCE_REQ_ID = None
@@ -125,7 +126,37 @@ def is_connection_error(exc: Exception) -> bool:
     ]
     return any(signal in text for signal in connection_signals)
 
+def is_duplicate_jobvite_error(result: Dict[str, Any]) -> bool:
+    """
+    Detects duplicate candidate/application errors returned by Jobvite.
 
+    Duplicate errors should not be written to the report because they mean
+    the candidate/application already exists.
+    """
+    try:
+        response_json = result.get("response_json", {})
+        message = result.get("message", "")
+
+        text = json.dumps(
+            {
+                "response_json": response_json,
+                "message": message,
+            },
+            ensure_ascii=False,
+        ).lower()
+
+        duplicate_signals = [
+            "duplicate",
+            "duplicated",
+            "duplicate application",
+            "duplicate candidate",
+        ]
+
+        return any(signal in text for signal in duplicate_signals)
+
+    except Exception:
+        return False
+    
 def retry_get_top_candidates(
     token_hhru: str,
     vacancy_id: str,
@@ -189,7 +220,8 @@ def publish_job_hhru():
     try:
         #code = get_code()
         #token_hhru = get_token(code)
-
+        
+        token_hhru = HH_ACCESS_TOKEN
         headers_for_managers = dict(headers_obtain_managers)
         headers_for_managers.update({
             "Authorization": f"Bearer {token_hhru}",
@@ -276,6 +308,7 @@ def publish_job_hhru():
                                 "candidate_phone": candidate.get("phone"),
                                 "candidate_score": candidate.get("score"),
                                 "candidate_city": candidate.get("city"),
+                                "candidate_age": candidate.get("age"),
                                 "candidate_resume_id": candidate.get("resume_id"),
                                 "candidate_resume_url": candidate.get("alternate_resume_url") or candidate.get("resume_url"),
                                 "candidate_negotiation_id": candidate.get("negotiation_id"),
@@ -291,7 +324,39 @@ def publish_job_hhru():
                                 f"| req={req} | vacancy_id={vacancy_id}"
                             )
                         else:
+                            if is_duplicate_jobvite_error(result):
+                                print(
+                                    f"[SKIP] Duplicate candidate/application found. Not added to report: "
+                                    f"{candidate.get('first_name', '')} {candidate.get('last_name', '')} "
+                                    f"| req={req} | detail={result.get('message')}"
+                                )
+                                continue
+                            
                             stats["candidates_failed"] += 1
+
+                            report_rows.append({
+                                "execution_started_at": execution_started_at,
+                                "posted_at": now_str(),
+                                "requisition_id": str(req),
+                                "hh_vacancy_id": vacancy_id,
+                                "hh_vacancy_name": vacancy_name,
+                                "hh_vacancy_url": vacancy_payload.get("alternate_url") or vacancy_url,
+                                "candidate_first_name": candidate.get("first_name"),
+                                "candidate_last_name": candidate.get("last_name"),
+                                "candidate_email": candidate.get("email"),
+                                "candidate_phone": candidate.get("phone"),
+                                "candidate_score": candidate.get("score"),
+                                "candidate_city": candidate.get("city"),
+                                "candidate_age": candidate.get("age"),
+                                "candidate_resume_id": candidate.get("resume_id"),
+                                "candidate_resume_url": candidate.get("alternate_resume_url") or candidate.get("resume_url"),
+                                "candidate_negotiation_id": candidate.get("negotiation_id"),
+                                "jobvite_status_code": result.get("status_code"),
+                                "jobvite_success": "NO",
+                                "jobvite_message": result.get("message"),
+                                "jobvite_response_id": result.get("response_id"),
+                            })
+
                             print(
                                 f"[ERROR] Candidate not created: "
                                 f"{candidate.get('first_name', '')} {candidate.get('last_name', '')} "
@@ -328,7 +393,16 @@ def publish_job_hhru():
     finally:
         try:
             report_info = save_publication_report(report_rows, stats)
+            if report_info.get("success"):
+                flow_result = send_excel_report_to_power_automate(
+                    file_path=report_info.get("file_path"),
+                    execution_stats=stats,
+                )
 
+                print("[INFO] Power Automate result:")
+                print(flow_result)
+            else:
+                print("[WARN] Report was not generated. Skipping Power Automate delivery.")
             print("\n================== FINAL SUMMARY ==================")
             print(f"Execution started at: {stats['execution_started_at']}")
             print(f"Vacancies found: {stats['vacancies_found']}")

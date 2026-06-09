@@ -30,13 +30,14 @@ from statics import (
     HH_USER_AGENT,
     NAUKRI_SECRET_KEY,
     NAUKRI_ACCESS_KEY,
+    POWER_AUTOMATE_REPORT_WEBHOOK_URL,
 )
 
 
 # =============================================================================
 # BACKWARD COMPATIBILITY
 # =============================================================================
-# Estos nombres mantienen tu main.py funcionando sin tener que reescribir todo.
+
 
 headers = JOBVITE_HEADERS
 headers_obtain_managers = HH_HEADERS
@@ -1079,7 +1080,7 @@ def _write_summary_req_sheet(
             "requisition_id",
             "hh_vacancy_id",
             "hh_vacancy_name",
-            "total_candidates_posted",
+            "candidates",
             "first_posted_at",
             "last_posted_at",
         ]
@@ -1188,6 +1189,82 @@ def _write_summary_execution_sheet(
         print(f"Error in _write_summary_execution_sheet: {e}\n{traceback.format_exc()}")
         raise
 
+def send_excel_report_to_power_automate(
+    file_path: str,
+    execution_stats: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Sends the generated Excel report to a Power Automate HTTP trigger.
+
+    The Excel file is converted to base64 and sent inside a JSON payload.
+    Power Automate can then attach it to an email, save it to SharePoint,
+    or continue any reporting workflow.
+    """
+    try:
+        if not POWER_AUTOMATE_REPORT_WEBHOOK_URL:
+            return {
+                "success": False,
+                "message": "POWER_AUTOMATE_REPORT_WEBHOOK_URL is not configured.",
+                "status_code": None,
+                "response": {},
+            }
+
+        if not os.path.exists(file_path):
+            return {
+                "success": False,
+                "message": f"Report file does not exist: {file_path}",
+                "status_code": None,
+                "response": {},
+            }
+
+        with open(file_path, "rb") as file:
+            file_base64 = base64.b64encode(file.read()).decode("utf-8")
+
+        payload = {
+            "file_name": os.path.basename(file_path),
+            "file_base64": file_base64,
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "generated_at": now_str(),
+            "execution_stats": execution_stats,
+        }
+
+        response = requests.post(
+            POWER_AUTOMATE_REPORT_WEBHOOK_URL,
+            json=payload,
+            timeout=60,
+        )
+
+        try:
+            response_json = response.json()
+        except Exception:
+            response_json = {"raw_response": response.text}
+
+        if response.status_code not in [200, 201, 202]:
+            return {
+                "success": False,
+                "message": "Power Automate flow rejected the request.",
+                "status_code": response.status_code,
+                "response": response_json,
+            }
+
+        return {
+            "success": True,
+            "message": "Report sent successfully to Power Automate.",
+            "status_code": response.status_code,
+            "response": response_json,
+        }
+
+    except Exception as e:
+        print(
+            f"Error in send_excel_report_to_power_automate: {e}\n"
+            f"{traceback.format_exc()}"
+        )
+        return {
+            "success": False,
+            "message": str(e),
+            "status_code": None,
+            "response": {},
+        }
 
 def save_publication_report(
     report_rows: List[Dict[str, Any]],

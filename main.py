@@ -19,6 +19,10 @@ from config import (
     get_code,
     get_token,
     send_excel_report_to_power_automate,
+    load_history_keys,
+    filter_rows_for_power_automate,
+    append_rows_to_history,
+    save_delta_report,
 )
 
 FORCE_REQ_ID = None
@@ -393,16 +397,39 @@ def publish_job_hhru():
     finally:
         try:
             report_info = save_publication_report(report_rows, stats)
-            if report_info.get("success"):
-                flow_result = send_excel_report_to_power_automate(
-                    file_path=report_info.get("file_path"),
-                    execution_stats=stats,
-                )
 
-                print("[INFO] Power Automate result:")
-                print(flow_result)
+            history_keys = load_history_keys()
+            new_rows = filter_rows_for_power_automate(report_rows, history_keys)
+            rows_skipped = len(report_rows) - len(new_rows)
+
+            print(f"[INFO] Power Automate filtering: {len(new_rows)} new row(s), {rows_skipped} skipped as duplicate")
+
+            if report_info.get("success") and new_rows:
+                delta_info = save_delta_report(new_rows, stats)
+
+                if delta_info.get("success"):
+                    pa_stats = {
+                        **stats,
+                        "rows_sent_to_pa": len(new_rows),
+                        "rows_skipped_as_duplicate": rows_skipped,
+                    }
+                    flow_result = send_excel_report_to_power_automate(
+                        file_path=delta_info.get("file_path"),
+                        execution_stats=pa_stats,
+                    )
+
+                    print("[INFO] Power Automate result:")
+                    print(flow_result)
+
+                    if flow_result.get("success"):
+                        append_rows_to_history(new_rows)
+                else:
+                    print("[WARN] Delta report was not generated. Skipping Power Automate delivery.")
+            elif not new_rows:
+                print("[INFO] No new rows for Power Automate. Skipping delivery.")
             else:
                 print("[WARN] Report was not generated. Skipping Power Automate delivery.")
+
             print("\n================== FINAL SUMMARY ==================")
             print(f"Execution started at: {stats['execution_started_at']}")
             print(f"Vacancies found: {stats['vacancies_found']}")
@@ -411,6 +438,8 @@ def publish_job_hhru():
             print(f"Candidates evaluated: {stats['candidates_evaluated']}")
             print(f"Candidates successfully posted: {stats['candidates_posted_successfully']}")
             print(f"Candidates failed: {stats['candidates_failed']}")
+            print(f"Rows sent to Power Automate: {len(new_rows)}")
+            print(f"Rows skipped as duplicate: {rows_skipped}")
             print(f"Excel file: {report_info.get('file_path')}")
             print("===================================================\n")
 

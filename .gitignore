@@ -25,6 +25,8 @@ Thumbs.db
 # Excel reports - revisar si contienen datos sensibles
 reports/*.xlsx
 reports/*.xls
+reports/jobvite_hhru_publication_history.xlsx
+reports/jobvite_hhru_publication_report_delta.xlsx
 
 # Local configs with secrets
 config_local.py

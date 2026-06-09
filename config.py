@@ -6,7 +6,7 @@ from urllib.parse import urlparse, parse_qs
 import traceback
 import time
 import hashlib
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime
 import cyrtranslit
 from openpyxl import Workbook, load_workbook
@@ -68,9 +68,39 @@ REPORTS_DIR = "reports"
 REPORT_FILE_NAME = "jobvite_hhru_publication_report.xlsx"
 REPORT_FILE_PATH = os.path.join(REPORTS_DIR, REPORT_FILE_NAME)
 
+HISTORY_FILE_NAME = "jobvite_hhru_publication_history.xlsx"
+HISTORY_FILE_PATH = os.path.join(REPORTS_DIR, HISTORY_FILE_NAME)
+
+DELTA_REPORT_FILE_NAME = "jobvite_hhru_publication_report_delta.xlsx"
+DELTA_REPORT_FILE_PATH = os.path.join(REPORTS_DIR, DELTA_REPORT_FILE_NAME)
+
 DETAIL_SHEET = "Posting Details"
 SUMMARY_REQ_SHEET = "Summary Requisitions"
 SUMMARY_EXEC_SHEET = "Summary Execution"
+HISTORY_SHEET = DETAIL_SHEET
+
+DETAIL_HEADERS = [
+    "execution_started_at",
+    "posted_at",
+    "requisition_id",
+    "hh_vacancy_id",
+    "hh_vacancy_name",
+    "hh_vacancy_url",
+    "candidate_first_name",
+    "candidate_last_name",
+    "candidate_email",
+    "candidate_phone",
+    "candidate_score",
+    "candidate_city",
+    "candidate_age",
+    "candidate_resume_id",
+    "candidate_resume_url",
+    "candidate_negotiation_id",
+    "jobvite_status_code",
+    "jobvite_success",
+    "jobvite_message",
+    "jobvite_response_id",
+]
 
 
 # =============================================================================
@@ -976,28 +1006,52 @@ def _apply_header_style(ws) -> None:
         print(f"Error in _apply_header_style: {e}\n{traceback.format_exc()}")
 
 
-def _ensure_workbook() -> Tuple[Any, Any]:
+def _ensure_workbook_at(
+    file_path: str,
+    sheet_names: Optional[List[str]] = None,
+    create_fresh: bool = False,
+) -> Tuple[Any, Any]:
     try:
         ensure_reports_dir()
+        sheet_names = sheet_names or [DETAIL_SHEET, SUMMARY_REQ_SHEET, SUMMARY_EXEC_SHEET]
 
-        if os.path.exists(REPORT_FILE_PATH):
-            wb = load_workbook(REPORT_FILE_PATH)
-        else:
+        if create_fresh or not os.path.exists(file_path):
             wb = Workbook()
+        else:
+            wb = load_workbook(file_path)
 
         if "Sheet" in wb.sheetnames and len(wb.sheetnames) == 1:
             default_sheet = wb["Sheet"]
             wb.remove(default_sheet)
 
-        for sheet_name in [DETAIL_SHEET, SUMMARY_REQ_SHEET, SUMMARY_EXEC_SHEET]:
+        for sheet_name in sheet_names:
             if sheet_name not in wb.sheetnames:
                 wb.create_sheet(sheet_name)
 
-        return wb, wb[DETAIL_SHEET]
+        return wb, wb[sheet_names[0]]
 
     except Exception as e:
-        print(f"Error in _ensure_workbook: {e}\n{traceback.format_exc()}")
+        print(f"Error in _ensure_workbook_at: {e}\n{traceback.format_exc()}")
         raise
+
+
+def _ensure_workbook() -> Tuple[Any, Any]:
+    return _ensure_workbook_at(REPORT_FILE_PATH)
+
+
+def _ensure_history_workbook() -> Tuple[Any, Any]:
+    return _ensure_workbook_at(HISTORY_FILE_PATH, sheet_names=[HISTORY_SHEET])
+
+
+def _build_row_key(row: Dict[str, Any]) -> Tuple[str, str]:
+    email = (row.get("candidate_email") or "").strip().lower()
+    req = str(row.get("requisition_id") or "").strip()
+
+    if email:
+        return (email, req)
+
+    negotiation_id = str(row.get("candidate_negotiation_id") or "").strip()
+    return (f"negotiation:{negotiation_id}", req)
 
 
 def _write_detail_sheet(
@@ -1005,40 +1059,17 @@ def _write_detail_sheet(
     report_rows: List[Dict[str, Any]],
 ) -> None:
     try:
-        headers_detail = [
-            "execution_started_at",
-            "posted_at",
-            "requisition_id",
-            "hh_vacancy_id",
-            "hh_vacancy_name",
-            "hh_vacancy_url",
-            "candidate_first_name",
-            "candidate_last_name",
-            "candidate_email",
-            "candidate_phone",
-            "candidate_score",
-            "candidate_city",
-            "candidate_age",
-            "candidate_resume_id",
-            "candidate_resume_url",
-            "candidate_negotiation_id",
-            "jobvite_status_code",
-            "jobvite_success",
-            "jobvite_message",
-            "jobvite_response_id",
-        ]
-
         if ws.max_row == 1 and ws["A1"].value is None:
-            ws.append(headers_detail)
+            ws.append(DETAIL_HEADERS)
 
         existing_headers = [cell.value for cell in ws[1]]
 
-        if existing_headers != headers_detail:
+        if existing_headers != DETAIL_HEADERS:
             ws.delete_rows(1, ws.max_row)
-            ws.append(headers_detail)
+            ws.append(DETAIL_HEADERS)
 
         for row in report_rows:
-            ws.append([row.get(col) for col in headers_detail])
+            ws.append([row.get(col) for col in DETAIL_HEADERS])
 
         _apply_header_style(ws)
         _autosize_columns(ws)
@@ -1188,6 +1219,98 @@ def _write_summary_execution_sheet(
     except Exception as e:
         print(f"Error in _write_summary_execution_sheet: {e}\n{traceback.format_exc()}")
         raise
+
+
+def load_history_keys() -> Set[Tuple[str, str]]:
+    try:
+        if not os.path.exists(HISTORY_FILE_PATH):
+            return set()
+
+        wb = load_workbook(HISTORY_FILE_PATH, read_only=True)
+        try:
+            if HISTORY_SHEET not in wb.sheetnames:
+                return set()
+
+            ws = wb[HISTORY_SHEET]
+            history_rows = _read_all_detail_rows(ws)
+            return {_build_row_key(row) for row in history_rows}
+        finally:
+            wb.close()
+
+    except Exception as e:
+        print(f"Error in load_history_keys: {e}\n{traceback.format_exc()}")
+        return set()
+
+
+def filter_rows_for_power_automate(
+    rows: List[Dict[str, Any]],
+    history_keys: Set[Tuple[str, str]],
+) -> List[Dict[str, Any]]:
+    new_rows: List[Dict[str, Any]] = []
+
+    for row in rows:
+        key = _build_row_key(row)
+        if key in history_keys:
+            continue
+
+        success = row.get("jobvite_success")
+        if success == "YES":
+            new_rows.append(row)
+        elif success == "NO":
+            new_rows.append(row)
+
+    return new_rows
+
+
+def append_rows_to_history(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+
+    try:
+        wb, detail_ws = _ensure_history_workbook()
+        _write_detail_sheet(detail_ws, rows)
+        wb.save(HISTORY_FILE_PATH)
+        print(f"[INFO] Appended {len(rows)} row(s) to history file: {HISTORY_FILE_PATH}")
+
+    except Exception as e:
+        print(f"Error in append_rows_to_history: {e}\n{traceback.format_exc()}")
+        raise
+
+
+def save_delta_report(
+    new_rows: List[Dict[str, Any]],
+    stats: Dict[str, Any],
+) -> Dict[str, Any]:
+    try:
+        wb, detail_ws = _ensure_workbook_at(
+            DELTA_REPORT_FILE_PATH,
+            create_fresh=True,
+        )
+
+        _write_detail_sheet(detail_ws, new_rows)
+
+        summary_req_ws = wb[SUMMARY_REQ_SHEET]
+        summary_exec_ws = wb[SUMMARY_EXEC_SHEET]
+
+        _write_summary_req_sheet(summary_req_ws, new_rows)
+        _write_summary_execution_sheet(summary_exec_ws, stats, new_rows)
+
+        wb.save(DELTA_REPORT_FILE_PATH)
+
+        return {
+            "success": True,
+            "file_path": DELTA_REPORT_FILE_PATH,
+            "rows_written": len(new_rows),
+        }
+
+    except Exception as e:
+        print(f"Error in save_delta_report: {e}\n{traceback.format_exc()}")
+        return {
+            "success": False,
+            "file_path": DELTA_REPORT_FILE_PATH,
+            "rows_written": 0,
+        }
+
 
 def send_excel_report_to_power_automate(
     file_path: str,

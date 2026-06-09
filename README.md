@@ -146,6 +146,8 @@ __pycache__/
 .vscode/
 reports/*.xlsx
 reports/*.xls
+reports/jobvite_hhru_publication_history.xlsx
+reports/jobvite_hhru_publication_report_delta.xlsx
 *.log
 ```
 
@@ -187,17 +189,70 @@ The automation will:
 
 ## Report Output
 
-The execution report is generated in:
+The automation generates three Excel files inside `reports/`:
+
+### Local operational report
 
 ```text
 reports/jobvite_hhru_publication_report.xlsx
 ```
 
-The workbook contains the following sheets:
+Cumulative local audit log. Appends every processed candidate (success and failure) on each run. This file is **not** sent to Power Automate.
+
+### Power Automate delta report
+
+```text
+reports/jobvite_hhru_publication_report_delta.xlsx
+```
+
+Generated per execution with **only new rows** that have not been sent before. This is the file delivered to Power Automate.
+
+### Send history
+
+```text
+reports/jobvite_hhru_publication_history.xlsx
+```
+
+Append-only record of every row successfully delivered to Power Automate. Used as the deduplication source for future runs.
+
+## Power Automate Deduplication
+
+Before sending a report to Power Automate, the automation:
+
+1. Loads keys from `jobvite_hhru_publication_history.xlsx`.
+2. Filters current execution rows against that history.
+3. Builds the delta report with only new rows.
+4. Sends the delta report to Power Automate.
+5. Appends the sent rows to the history file **only if** Power Automate responds successfully.
+
+If Power Automate fails, the history file is not updated. The next run will retry sending the same new rows.
+
+### Deduplication key
+
+Rows are considered duplicates when the same combination already exists in the history:
+
+```text
+candidate_email + requisition_id
+```
+
+If `candidate_email` is missing, the fallback key is:
+
+```text
+candidate_negotiation_id + requisition_id
+```
+
+### Rows eligible for Power Automate
+
+- `jobvite_success = YES`: included if not already in history.
+- `jobvite_success = NO`: included only if that key has never been sent before.
+
+### Workbook sheets (operational and delta reports)
+
+The operational and delta workbooks contain the following sheets:
 
 ### `Posting Details`
 
-Detailed list of successfully posted candidates.
+Detailed list of candidates processed in the run (operational report) or newly sent candidates (delta report).
 
 ### `Summary Requisitions`
 
